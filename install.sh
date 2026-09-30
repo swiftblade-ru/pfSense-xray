@@ -3,8 +3,8 @@
 # install.sh — Install pfSense Xray package.
 #
 # Run from the cloned repository root on pfSense:
-#   git clone https://github.com/YOUR_ORG/pfsense-xray.git
-#   cd pfsense-xray
+#   git clone https://github.com/swiftblade-ru/pfSense-xray.git
+#   cd pfSense-xray
 #   sh install.sh [command] [options]
 #
 # Commands:
@@ -14,9 +14,9 @@
 #   download-binaries    Download xray-core + tunnel binaries only
 #
 # Options:
-#   --xray-version VER   xray-core version (default: 25.4.30)
-#   --hev-version VER    hev-socks5-tunnel version (default: 2.14.4, x86_64 only)
-#   --t2s-version VER    tun2socks version (default: 2.5.2, aarch64 fallback)
+#   --xray-version VER   xray-core version (default: latest)
+#   --hev-version VER    hev-socks5-tunnel version (default: latest, x86_64 only)
+#   --t2s-version VER    tun2socks version (default: latest, aarch64 fallback)
 #   --backend BACKEND    Force tunnel backend: 'hev' or 'tun2socks' (overrides arch detection)
 #   --no-binaries        Skip binary download (use existing)
 
@@ -25,9 +25,9 @@ set -u
 
 # ─── Defaults ─────────────────────────────────────────────────────────────────
 COMMAND="install"
-XRAY_VERSION="25.4.30"
-HEV_VERSION="2.14.4"
-T2S_VERSION="2.5.2"
+XRAY_VERSION="latest"
+HEV_VERSION="latest"
+T2S_VERSION="latest"
 SKIP_BINARIES=0
 FORCE_BACKEND=""
 
@@ -77,16 +77,30 @@ die()   { echo "[ERROR] $*" >&2; exit 1; }
 REPO_ROOT="$(cd "$(dirname "$0")" && pwd)"
 REPO_DOWNLOADED=0
 
+# ─── Resolve latest release tag from GitHub ──────────────────────────────────
+# Usage: resolve_latest_tag <owner/repo> <fallback-version>
+# Returns the tag with any leading "v" stripped. If GitHub API fails or the
+# repo has no releases, returns the fallback.
+resolve_latest_tag() {
+    _repo="$1"
+    _fallback="$2"
+    _tag=$(fetch -q -o - "https://api.github.com/repos/${_repo}/releases/latest" 2>/dev/null \
+        | grep '"tag_name"' \
+        | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/')
+    if [ -z "${_tag}" ]; then
+        echo "${_fallback}"
+    else
+        echo "${_tag}" | sed 's/^v//'
+    fi
+}
+
 # ─── Verify we're running on pfSense ─────────────────────────────────────────
 if [ ! -f /etc/inc/config.inc ]; then
     die "This script must be run on pfSense (FreeBSD). /etc/inc/config.inc not found."
 fi
 
 # ─── Auto-fetch package files if running as standalone install.sh ─────────────
-# When the script is fetched directly (not from a git clone), the files/ tree
-# won't be present next to it.  Download and unpack the repository archive so
-# cmd_deploy_files has something to copy from.
-GITHUB_REPO="pdazcom/pfSense-pkg-xray"
+GITHUB_REPO="swiftblade-ru/pfSense-xray"
 
 if [ ! -d "${REPO_ROOT}/files" ]; then
     LATEST_TAG=$(fetch -q -o - "https://api.github.com/repos/${GITHUB_REPO}/releases/latest" 2>/dev/null | grep '"tag_name"' | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/')
@@ -125,6 +139,25 @@ cmd_download_binaries() {
 
     mkdir -p /usr/local/etc/xray-core
     mkdir -p /usr/local/tun2socks
+
+    # ── Resolve "latest" versions before building download URLs ──────────────
+    if [ "${XRAY_VERSION}" = "latest" ] || [ -z "${XRAY_VERSION}" ]; then
+        info "Resolving latest xray-core version from GitHub..."
+        XRAY_VERSION=$(resolve_latest_tag "XTLS/Xray-core" "25.4.30")
+        ok "xray-core latest: ${XRAY_VERSION}"
+    fi
+
+    if [ "${HEV_VERSION}" = "latest" ] || [ -z "${HEV_VERSION}" ]; then
+        info "Resolving latest hev-socks5-tunnel version from GitHub..."
+        HEV_VERSION=$(resolve_latest_tag "heiher/hev-socks5-tunnel" "2.14.4")
+        ok "hev-socks5-tunnel latest: ${HEV_VERSION}"
+    fi
+
+    if [ "${T2S_VERSION}" = "latest" ] || [ -z "${T2S_VERSION}" ]; then
+        info "Resolving latest tun2socks version from GitHub..."
+        T2S_VERSION=$(resolve_latest_tag "xjasonlyu/tun2socks" "2.5.2")
+        ok "tun2socks latest: ${T2S_VERSION}"
+    fi
 
     # xray-core
     XRAY_URL="https://github.com/XTLS/Xray-core/releases/download/v${XRAY_VERSION}/Xray-freebsd-${XRAY_ARCH}.zip"

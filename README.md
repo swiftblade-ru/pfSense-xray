@@ -1,6 +1,6 @@
-# pfSense-pkg-xray
+# pfSense-xray
 
-[![License](https://img.shields.io/github/license/pdazcom/pfSense-pkg-xray)](LICENSE)
+[![License](https://img.shields.io/github/license/swiftblade-ru/pfSense-xray)](LICENSE)
 [![pfSense](https://img.shields.io/badge/pfSense-CE%202.7.x%20%2F%202.8.x-blue)](https://www.pfsense.org)
 [![FreeBSD](https://img.shields.io/badge/FreeBSD-14.x%20%2F%2015.x%20amd64%20%2F%20aarch64-red)](https://freebsd.org)
 [![PHP](https://img.shields.io/badge/PHP-8.2%20%2F%208.3-purple)](https://php.net)
@@ -50,11 +50,6 @@ On **amd64**, [hev-socks5-tunnel](https://github.com/heiher/hev-socks5-tunnel) i
 - **Bypass Networks** — configurable CIDR list routed directly, not through Xray
 - **Webhook notifications** — per-instance and global webhook called when rotation finds no working connection
 
-Vless:
-- **TCP
-- **gRPC
-- **xHTTP
-
 ---
 
 ## Requirements
@@ -79,7 +74,7 @@ Vless:
 SSH into pfSense and run:
 
 ```sh
-fetch -o /tmp/install.sh https://raw.githubusercontent.com/pdazcom/pfSense-pkg-xray/main/install.sh && sh /tmp/install.sh
+fetch -o /tmp/install.sh https://raw.githubusercontent.com/swiftblade-ru/pfSense-xray/main/install.sh && sh /tmp/install.sh
 ```
 
 > **Why `fetch` instead of `curl`?** pfSense/FreeBSD ships `fetch` by default. `curl` may not be available without installing it separately.
@@ -105,8 +100,8 @@ If you prefer to have the full source available (e.g. for development or customi
 
 ```sh
 cd /tmp
-git clone https://github.com/pdazcom/pfSense-pkg-xray.git
-cd pfSense-pkg-xray
+git clone https://github.com/swiftblade-ru/pfSense-xray.git
+cd pfSense-xray
 sh install.sh
 ```
 
@@ -252,13 +247,13 @@ ICMP traffic will then bypass the tunnel and go out through the normal WAN. Ping
 ## Updating
 
 ```sh
-fetch -o /tmp/install.sh https://raw.githubusercontent.com/pdazcom/pfSense-pkg-xray/main/install.sh && sh /tmp/install.sh update
+fetch -o /tmp/install.sh https://raw.githubusercontent.com/swiftblade-ru/pfSense-xray/main/install.sh && sh /tmp/install.sh update
 ```
 
 Or, if installed via git clone:
 
 ```sh
-cd /tmp/pfSense-pkg-xray
+cd /tmp/pfSense-xray
 git pull
 sh install.sh update
 ```
@@ -268,13 +263,13 @@ sh install.sh update
 ## Uninstalling
 
 ```sh
-fetch -o /tmp/install.sh https://raw.githubusercontent.com/pdazcom/pfSense-pkg-xray/main/install.sh && sh /tmp/install.sh uninstall
+fetch -o /tmp/install.sh https://raw.githubusercontent.com/swiftblade-ru/pfSense-xray/main/install.sh && sh /tmp/install.sh uninstall
 ```
 
 Or, if installed via git clone:
 
 ```sh
-cd /tmp/pfSense-pkg-xray
+cd /tmp/pfSense-xray
 sh install.sh uninstall
 ```
 
@@ -288,7 +283,7 @@ Then manually remove in pfSense UI:
 ## File Structure
 
 ```
-pfSense-pkg-xray/
+pfSense-xray/
 ├── pkg/
 │   └── xray.xml                              # Package manifest (menus, hooks, cron)
 ├── files/
