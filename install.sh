@@ -2,59 +2,49 @@
 #
 # install.sh — Install pfSense Xray package.
 #
-# Run from the cloned repository root on pfSense:
-#   git clone https://github.com/swiftblade-ru/pfSense-xray.git
+# Run from the repository root on pfSense:
 #   cd pfSense-xray
 #   sh install.sh [command] [options]
+#
+# Binaries are installed from local folders next to this script:
+#   xray-core/xray                    (required)
+#   xray-core/geoip.dat               (optional)
+#   xray-core/geosite.dat             (optional)
+#   hev-socks5-tunnel/hev-socks5-tunnel   (required on amd64)
+#   tun2socks/tun2socks                   (required on aarch64)
+#
+# No binaries are ever downloaded from GitHub.
 #
 # Commands:
 #   install              Full install (default)
 #   update               Re-deploy files + restart services
 #   uninstall            Stop services, remove files, clean config
-#   download-binaries    Download xray-core + tunnel binaries only
+#   install-binaries     Install xray-core + tunnel binaries only
 #
 # Options:
-#   --xray-version VER   xray-core version (default: latest)
-#   --hev-version VER    hev-socks5-tunnel version (default: latest, x86_64 only)
-#   --t2s-version VER    tun2socks version (default: latest, aarch64 fallback)
 #   --backend BACKEND    Force tunnel backend: 'hev' or 'tun2socks' (overrides arch detection)
-#   --no-binaries        Skip binary download (use existing)
+#   --no-binaries        Skip binary install (use existing)
 
 set -e
 set -u
 
 # ─── Defaults ─────────────────────────────────────────────────────────────────
 COMMAND="install"
-XRAY_VERSION="latest"
-HEV_VERSION="latest"
-T2S_VERSION="latest"
 SKIP_BINARIES=0
 FORCE_BACKEND=""
 
 # ─── Parse arguments ──────────────────────────────────────────────────────────
 while [ $# -gt 0 ]; do
     case "$1" in
-        install|update|uninstall|download-binaries)
+        install|update|uninstall|install-binaries)
             COMMAND="$1"
             shift
-            ;;
-        --xray-version)
-            XRAY_VERSION="$2"
-            shift 2
-            ;;
-        --hev-version)
-            HEV_VERSION="$2"
-            shift 2
-            ;;
-        --t2s-version)
-            T2S_VERSION="$2"
-            shift 2
             ;;
         --backend)
             FORCE_BACKEND="$2"
             case "${FORCE_BACKEND}" in
                 hev|tun2socks) ;;
-                *) die "--backend must be 'hev' or 'tun2socks'" ;;
+                *) echo "[ERROR] --backend must be 'hev' or 'tun2socks'" >&2; exit 1 ;;
             esac
             shift 2
             ;;
@@ -75,109 +65,113 @@ ok()    { echo "    [OK] $*"; }
 die()   { echo "[ERROR] $*" >&2; exit 1; }
 
 REPO_ROOT="$(cd "$(dirname "$0")" && pwd)"
-REPO_DOWNLOADED=0
 
-# ─── Resolve latest release tag from GitHub ──────────────────────────────────
-# Usage: resolve_latest_tag <owner/repo> <fallback-version>
-# Returns the tag with any leading "v" stripped. If GitHub API fails or the
-# repo has no releases, returns the fallback.
-resolve_latest_tag() {
-    _repo="$1"
-    _fallback="$2"
-    _tag=$(fetch -q -o - "https://api.github.com/repos/${_repo}/releases/latest" 2>/dev/null \
-        | grep '"tag_name"' \
-        | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/')
-    if [ -z "${_tag}" ]; then
-        echo "${_fallback}"
-    else
-        echo "${_tag}" | sed 's/^v//'
-    fi
-}
+# ─── Embedded binary folders (next to install.sh) ────────────────────────────
+EMBED_XRAY_DIR="${REPO_ROOT}/xray-core"
+EMBED_HEV_DIR="${REPO_ROOT}/hev-socks5-tunnel"
+EMBED_T2S_DIR="${REPO_ROOT}/tun2socks"
 
 # ─── Verify we're running on pfSense ─────────────────────────────────────────
 if [ ! -f /etc/inc/config.inc ]; then
     die "This script must be run on pfSense (FreeBSD). /etc/inc/config.inc not found."
 fi
 
-# ─── Auto-fetch package files if running as standalone install.sh ─────────────
-GITHUB_REPO="swiftblade-ru/pfSense-xray"
-
+# ─── Verify package files are present ────────────────────────────────────────
 if [ ! -d "${REPO_ROOT}/files" ]; then
-    LATEST_TAG=$(fetch -q -o - "https://api.github.com/repos/${GITHUB_REPO}/releases/latest" 2>/dev/null | grep '"tag_name"' | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/')
-    [ -z "${LATEST_TAG}" ] && die "Failed to determine latest release tag from GitHub"
-
-    ARCHIVE_URL="https://github.com/${GITHUB_REPO}/archive/refs/tags/${LATEST_TAG}.tar.gz"
-    ARCHIVE_TMP="/tmp/pfsense-pkg-xray-src-$$.tar.gz"
-    EXTRACT_DIR="/tmp/pfsense-pkg-xray-src-$$"
-
-    info "Package source not found locally — downloading ${LATEST_TAG} from GitHub..."
-    fetch -q -o "${ARCHIVE_TMP}" "${ARCHIVE_URL}" || die "Failed to download package source from GitHub"
-
-    mkdir -p "${EXTRACT_DIR}"
-    tar -xzf "${ARCHIVE_TMP}" -C "${EXTRACT_DIR}" --strip-components=1 || die "Failed to extract package source"
-    rm -f "${ARCHIVE_TMP}"
-
-    REPO_ROOT="${EXTRACT_DIR}"
-    REPO_DOWNLOADED=1
-    ok "Package source downloaded"
+    die "Package files not found at ${REPO_ROOT}/files/. Run install.sh from the repository root."
 fi
 
 # ─── Architecture detection ───────────────────────────────────────────────────
 ARCH=$(uname -m)
 case "${ARCH}" in
-    amd64)   XRAY_ARCH="64";        T2S_ARCH="amd64"; HEV_ARCH="x86_64" ;;
-    aarch64) XRAY_ARCH="arm64-v8a"; T2S_ARCH="arm64"; HEV_ARCH="" ;;
+    amd64)   HEV_ARCH="x86_64" ;;
+    aarch64) HEV_ARCH="" ;;
     *)       die "Unsupported architecture: ${ARCH}" ;;
 esac
 
-# ─── Binary download ──────────────────────────────────────────────────────────
-cmd_download_binaries() {
-    TMPDIR="/tmp/xray-install-$$"
-    mkdir -p "${TMPDIR}"
-
-    trap 'rm -rf "${TMPDIR}"' EXIT
-
+# ─── Install xray-core from local folder ─────────────────────────────────────
+install_xray_core() {
     mkdir -p /usr/local/etc/xray-core
+
+    src=""
+    for candidate in "${EMBED_XRAY_DIR}/xray" "${EMBED_XRAY_DIR}/xray-core"; do
+        if [ -f "${candidate}" ]; then
+            src="${candidate}"
+            break
+        fi
+    done
+
+    if [ -z "${src}" ]; then
+        die "xray binary not found. Expected one of:
+       ${EMBED_XRAY_DIR}/xray
+       ${EMBED_XRAY_DIR}/xray-core"
+    fi
+
+    info "Installing xray-core from ${src}..."
+    install -m 755 "${src}" /usr/local/bin/xray-core
+
+    # Optional geo data files used by routing rules (geoip:xx, geosite:xx)
+    for dat in geoip.dat geosite.dat; do
+        if [ -f "${EMBED_XRAY_DIR}/${dat}" ]; then
+            install -m 644 "${EMBED_XRAY_DIR}/${dat}" "/usr/local/etc/xray-core/${dat}"
+        fi
+    done
+
+    # version.txt: try VERSION file first, else parse `xray-core version`
+    if [ -f "${EMBED_XRAY_DIR}/VERSION" ]; then
+        cp "${EMBED_XRAY_DIR}/VERSION" /usr/local/etc/xray-core/version.txt
+    else
+        _ver=$(/usr/local/bin/xray-core version 2>/dev/null | head -1 | awk '{print $2}')
+        echo "${_ver:-embedded}" > /usr/local/etc/xray-core/version.txt
+    fi
+
+    ok "xray-core $(/usr/local/bin/xray-core version 2>/dev/null | head -1)"
+}
+
+# ─── Install hev-socks5-tunnel from local folder (amd64) ─────────────────────
+install_hev() {
     mkdir -p /usr/local/tun2socks
 
-    # ── Resolve "latest" versions before building download URLs ──────────────
-    if [ "${XRAY_VERSION}" = "latest" ] || [ -z "${XRAY_VERSION}" ]; then
-        info "Resolving latest xray-core version from GitHub..."
-        XRAY_VERSION=$(resolve_latest_tag "XTLS/Xray-core" "25.4.30")
-        ok "xray-core latest: ${XRAY_VERSION}"
+    src="${EMBED_HEV_DIR}/hev-socks5-tunnel"
+    if [ ! -f "${src}" ]; then
+        die "hev-socks5-tunnel binary not found at ${src}"
     fi
 
-    if [ "${HEV_VERSION}" = "latest" ] || [ -z "${HEV_VERSION}" ]; then
-        info "Resolving latest hev-socks5-tunnel version from GitHub..."
-        HEV_VERSION=$(resolve_latest_tag "heiher/hev-socks5-tunnel" "2.14.4")
-        ok "hev-socks5-tunnel latest: ${HEV_VERSION}"
+    info "Installing hev-socks5-tunnel from ${src}..."
+    install -m 755 "${src}" /usr/local/tun2socks/hev-socks5-tunnel
+    rm -f /usr/local/tun2socks/tun2socks
+    echo "hev" > /usr/local/tun2socks/backend.txt
+    ok "hev-socks5-tunnel $(/usr/local/tun2socks/hev-socks5-tunnel --version 2>/dev/null | head -1)"
+}
+
+# ─── Install tun2socks from local folder (aarch64) ───────────────────────────
+install_tun2socks() {
+    mkdir -p /usr/local/tun2socks
+
+    src=""
+    for candidate in "${EMBED_T2S_DIR}/tun2socks" "${EMBED_T2S_DIR}/tun2socks-freebsd-amd64" "${EMBED_T2S_DIR}/tun2socks-freebsd-arm64"; do
+        if [ -f "${candidate}" ]; then
+            src="${candidate}"
+            break
+        fi
+    done
+
+    if [ -z "${src}" ]; then
+        die "tun2socks binary not found in ${EMBED_T2S_DIR}/"
     fi
 
-    if [ "${T2S_VERSION}" = "latest" ] || [ -z "${T2S_VERSION}" ]; then
-        info "Resolving latest tun2socks version from GitHub..."
-        T2S_VERSION=$(resolve_latest_tag "xjasonlyu/tun2socks" "2.5.2")
-        ok "tun2socks latest: ${T2S_VERSION}"
-    fi
+    info "Installing tun2socks from ${src}..."
+    install -m 755 "${src}" /usr/local/tun2socks/tun2socks
+    rm -f /usr/local/tun2socks/hev-socks5-tunnel
+    echo "tun2socks" > /usr/local/tun2socks/backend.txt
+    ok "tun2socks $(/usr/local/tun2socks/tun2socks --version 2>/dev/null | head -1)"
+}
 
-    # xray-core
-    XRAY_URL="https://github.com/XTLS/Xray-core/releases/download/v${XRAY_VERSION}/Xray-freebsd-${XRAY_ARCH}.zip"
-    info "Downloading xray-core ${XRAY_VERSION}..."
-    fetch -q -o "${TMPDIR}/xray.zip" "${XRAY_URL}" || die "Failed to download xray-core"
+# ─── Binary install dispatcher ────────────────────────────────────────────────
+cmd_install_binaries() {
+    install_xray_core
 
-    mkdir -p "${TMPDIR}/xray-core"
-    unzip -q "${TMPDIR}/xray.zip" -d "${TMPDIR}/xray-core/" || die "Failed to unzip xray-core"
-
-    if [ -f "${TMPDIR}/xray-core/xray" ]; then
-        install -m 755 "${TMPDIR}/xray-core/xray" /usr/local/bin/xray-core
-    else
-        die "xray binary not found in archive"
-    fi
-
-    echo "${XRAY_VERSION}" > /usr/local/etc/xray-core/version.txt
-    ok "xray-core $(/usr/local/bin/xray-core version 2>/dev/null | head -1)"
-
-    # hev-socks5-tunnel (x86_64) or tun2socks fallback (aarch64)
-    # --backend flag overrides auto-detection
+    # --backend override
     if [ "${FORCE_BACKEND}" = "tun2socks" ]; then
         HEV_ARCH=""
     elif [ "${FORCE_BACKEND}" = "hev" ] && [ -z "${HEV_ARCH}" ]; then
@@ -185,43 +179,16 @@ cmd_download_binaries() {
     fi
 
     if [ -n "${HEV_ARCH}" ]; then
-        HEV_URL="https://github.com/heiher/hev-socks5-tunnel/releases/download/${HEV_VERSION}/hev-socks5-tunnel-freebsd-${HEV_ARCH}"
-        info "Downloading hev-socks5-tunnel ${HEV_VERSION} (${HEV_ARCH})..."
-        fetch -q -o "${TMPDIR}/hev-socks5-tunnel" "${HEV_URL}" || die "Failed to download hev-socks5-tunnel"
-        install -m 755 "${TMPDIR}/hev-socks5-tunnel" /usr/local/tun2socks/hev-socks5-tunnel
-        rm -f /usr/local/tun2socks/tun2socks
-        echo "hev" > /usr/local/tun2socks/backend.txt
-        ok "hev-socks5-tunnel $(/usr/local/tun2socks/hev-socks5-tunnel --version 2>/dev/null | head -1)"
+        install_hev
     else
-        info "hev-socks5-tunnel has no ${ARCH} binary — using tun2socks fallback"
-        T2S_URL="https://github.com/xjasonlyu/tun2socks/releases/download/v${T2S_VERSION}/tun2socks-freebsd-${T2S_ARCH}.zip"
-        info "Downloading tun2socks ${T2S_VERSION}..."
-        fetch -q -o "${TMPDIR}/tun2socks.zip" "${T2S_URL}" || die "Failed to download tun2socks"
-
-        mkdir -p "${TMPDIR}/tun2socks"
-        unzip -q "${TMPDIR}/tun2socks.zip" -d "${TMPDIR}/tun2socks/" || die "Failed to unzip tun2socks"
-
-        T2S_BIN=""
-        for candidate in "${TMPDIR}/tun2socks/tun2socks" "${TMPDIR}/tun2socks/tun2socks-freebsd-${T2S_ARCH}"; do
-            if [ -f "${candidate}" ]; then
-                T2S_BIN="${candidate}"
-                break
-            fi
-        done
-        [ -z "${T2S_BIN}" ] && die "tun2socks binary not found in archive"
-
-        install -m 755 "${T2S_BIN}" /usr/local/tun2socks/tun2socks
-        rm -f /usr/local/tun2socks/hev-socks5-tunnel
-        echo "tun2socks" > /usr/local/tun2socks/backend.txt
-        ok "tun2socks $(/usr/local/tun2socks/tun2socks --version 2>/dev/null | head -1)"
+        install_tun2socks
     fi
 }
 
-# ─── Deploy package files from repo ──────────────────────────────────────────
+# ─── Deploy package files ────────────────────────────────────────────────────
 cmd_deploy_files() {
     info "Deploying package files..."
 
-    # Create directories
     mkdir -p /usr/local/scripts/xray
     mkdir -p /usr/local/www/xray
     mkdir -p /usr/local/pkg/xray/includes
@@ -230,19 +197,15 @@ cmd_deploy_files() {
     chmod 750 /usr/local/tun2socks      2>/dev/null || true
     chmod 755 /usr/local/scripts/xray
 
-    # Scripts
     cp "${REPO_ROOT}/files/usr/local/scripts/xray/"*.php /usr/local/scripts/xray/
     cp "${REPO_ROOT}/files/usr/local/scripts/xray/"*.inc /usr/local/scripts/xray/
     chmod +x /usr/local/scripts/xray/*.php
 
-    # rc script
     cp "${REPO_ROOT}/files/usr/local/etc/rc.d/xray.sh" /usr/local/etc/rc.d/xray.sh
     chmod +x /usr/local/etc/rc.d/xray.sh
 
-    # Package includes
     cp "${REPO_ROOT}/files/usr/local/pkg/xray/includes/"* /usr/local/pkg/xray/includes/
 
-    # GUI pages
     cp "${REPO_ROOT}/files/usr/local/www/xray/"*.php /usr/local/www/xray/
 
     ok "Files deployed"
@@ -252,11 +215,9 @@ cmd_deploy_files() {
 cmd_configure_system() {
     info "Configuring system..."
 
-    # Load TUN kernel module
     kldload if_tun 2>/dev/null || true
     ok "if_tun kernel module loaded"
 
-    # Log rotation
     mkdir -p /etc/newsyslog.conf.d
     cat > /etc/newsyslog.conf.d/xray.conf << 'EOF'
 /var/log/xray-core.log      root:wheel  644  3  600  *  JG
@@ -269,10 +230,6 @@ EOF
 cmd_register_package() {
     info "Registering package in pfSense..."
 
-    # On pfSense 2.8.1+ the DHCP service was moved to a package, so
-    # services.inc → services_dhcp.inc no longer exists in the base system.
-    # We stub it out in a temp directory placed first on the include path so
-    # the bootstrap chain completes on both 2.7.x and 2.8.x.
     STUB_DIR="/tmp/xray-inc-stub-$$"
     mkdir -p "${STUB_DIR}"
     printf '<?php\n' > "${STUB_DIR}/services_dhcp.inc"
@@ -370,7 +327,7 @@ case "${COMMAND}" in
         echo ""
 
         if [ "${SKIP_BINARIES}" -eq 0 ]; then
-            cmd_download_binaries
+            cmd_install_binaries
         fi
 
         cmd_deploy_files
@@ -395,7 +352,7 @@ case "${COMMAND}" in
         cmd_stop_all
 
         if [ "${SKIP_BINARIES}" -eq 0 ]; then
-            cmd_download_binaries
+            cmd_install_binaries
         fi
 
         cmd_deploy_files
@@ -423,13 +380,8 @@ case "${COMMAND}" in
         echo ""
         ;;
 
-    download-binaries)
-        cmd_download_binaries
+    install-binaries)
+        cmd_install_binaries
         ;;
 
 esac
-
-# ─── Cleanup downloaded source tree ──────────────────────────────────────────
-if [ "${REPO_DOWNLOADED}" -eq 1 ] && [ -d "${REPO_ROOT}" ]; then
-    rm -rf "${REPO_ROOT}"
-fi

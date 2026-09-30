@@ -1,0 +1,4 @@
+xray-core/xray binary
+xray-core/*.dat binary
+hev-socks5-tunnel/hev-socks5-tunnel binary
+tun2socks/tun2socks binary
