@@ -50,6 +50,11 @@ On **amd64**, [hev-socks5-tunnel](https://github.com/heiher/hev-socks5-tunnel) i
 - **Bypass Networks** — configurable CIDR list routed directly, not through Xray
 - **Webhook notifications** — per-instance and global webhook called when rotation finds no working connection
 
+Vless:
+- **TCP
+- **gRPC
+- **xHTTP
+
 ---
 
 ## Requirements
